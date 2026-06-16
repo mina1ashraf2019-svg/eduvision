@@ -11,35 +11,53 @@ def show_admin():
     with st.sidebar:
         st.markdown(f"### 👑 {'لوحة التحكم' if lang=='ar' else 'Admin Panel'}")
         pages = {
-            "dashboard":    ("📊", "الرئيسية",     "Dashboard"),
-            "users":        ("👥", "المستخدمين",   "Users"),
-            "subjects":     ("📚", "المواد",        "Subjects"),
-            "access_codes": ("🔑", "أكواد الوصول", "Access Codes"),
-            "results":      ("📈", "النتائج",       "Results"),
-            "audit":        ("📋", "سجل الأحداث",  "Audit Log"),
+            "dashboard":    ("📊", "الرئيسية"),
+            "users":        ("👥", "المستخدمين"),
+            "subjects":     ("📚", "المواد"),
+            "access_codes": ("🔑", "أكواد الوصول"),
+            "attendance":   ("📋", "الحضور"),
+            "sales":        ("💰", "المبيعات"),
+            "security":     ("🔒", "الأمان"),
+            "results":      ("📈", "النتائج"),
+            "audit":        ("📋", "سجل الأحداث"),
         }
         if "admin_page" not in st.session_state:
             st.session_state.admin_page = "dashboard"
-        for key, (icon, ar, en) in pages.items():
-            label  = f"{icon} {ar if lang=='ar' else en}"
+        for key, (icon, label) in pages.items():
             active = st.session_state.admin_page == key
-            if st.button(label, use_container_width=True,
-                         type="primary" if active else "secondary"):
+            if st.button(f"{icon} {label}", use_container_width=True,
+                         type="primary" if active else "secondary",
+                         key=f"admin_nav_{key}"):
                 st.session_state.admin_page = key
                 st.rerun()
 
     page = st.session_state.admin_page
-    if   page == "dashboard":    _dashboard(sb, lang)
-    elif page == "users":        _users(sb, lang, uid)
-    elif page == "subjects":     _subjects(sb, lang, uid)
-    elif page == "access_codes": _access_codes(sb, lang, uid)
-    elif page == "results":      _results(sb, lang)
-    elif page == "audit":        _audit(sb, lang)
+
+    if page == "dashboard":
+        _dashboard(sb, lang)
+    elif page == "users":
+        _users(sb, lang, uid)
+    elif page == "subjects":
+        _subjects(sb, lang, uid)
+    elif page == "access_codes":
+        _access_codes(sb, lang, uid)
+    elif page == "attendance":
+        from app.pages.admin.attendance import show_attendance
+        show_attendance()
+    elif page == "sales":
+        from app.pages.admin.sales import show_sales
+        show_sales()
+    elif page == "security":
+        from app.pages.admin.security import show_security
+        show_security()
+    elif page == "results":
+        _results(sb, lang)
+    elif page == "audit":
+        _audit(sb, lang)
 
 
-# ── DASHBOARD ─────────────────────────────────────────────────
 def _dashboard(sb, lang):
-    st.title("📊 " + ("الرئيسية" if lang=="ar" else "Dashboard"))
+    st.title("📊 الرئيسية")
     try:
         student_role_id = sb.table("roles").select("id").eq("name","student").single().execute().data["id"]
         teacher_role_id = sb.table("roles").select("id").eq("name","teacher").single().execute().data["id"]
@@ -55,11 +73,19 @@ def _dashboard(sb, lang):
     c2.metric("📚 المعلمون",   teachers)
     c3.metric("📖 المواد",      subjects)
     c4.metric("📝 الامتحانات", exams)
-    st.divider()
 
-    st.subheader("📈 " + ("آخر النتائج" if lang=="ar" else "Latest Results"))
+    # Security alerts summary
     try:
-        res = sb.table("results").select("submitted_at, score, total, profiles(full_name), exams(title)") \
+        alerts = sb.table("security_alerts").select("id", count="exact").eq("resolved", False).execute().count or 0
+        if alerts > 0:
+            st.warning(f"⚠️ {alerts} تنبيه أمني يحتاج مراجعة")
+    except Exception:
+        pass
+
+    st.divider()
+    st.subheader("📈 آخر النتائج")
+    try:
+        res = sb.table("results").select("submitted_at, score, total, profiles(full_name), exams(title)")\
                 .order("submitted_at", desc=True).limit(10).execute()
         if res.data:
             import pandas as pd
@@ -72,17 +98,15 @@ def _dashboard(sb, lang):
                     "الدرجة":  f"{r['score']}/{r['total']} ({pct}%)",
                     "التاريخ": str(r["submitted_at"])[:10],
                 })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(__import__("pandas").DataFrame(rows), use_container_width=True, hide_index=True)
         else:
             st.info("لا توجد نتائج بعد")
     except Exception as e:
         st.error(f"خطأ: {e}")
 
 
-# ── USERS ─────────────────────────────────────────────────────
 def _users(sb, lang, uid):
-    st.title("👥 " + ("المستخدمين" if lang=="ar" else "Users"))
-
+    st.title("👥 المستخدمين")
     with st.expander("➕ إضافة مستخدم"):
         with st.form("add_user"):
             c1, c2 = st.columns(2)
@@ -90,7 +114,7 @@ def _users(sb, lang, uid):
                 u_name  = st.text_input("الاسم الكامل")
                 u_email = st.text_input("البريد الإلكتروني")
             with c2:
-                u_role  = st.selectbox("الدور", ["teacher","co_admin","admin"])
+                u_role  = st.selectbox("الدور", ["teacher","co_admin","admin","cashier"])
                 u_pass  = st.text_input("كلمة المرور", type="password")
             if st.form_submit_button("➕ إضافة", use_container_width=True):
                 if all([u_name, u_email, u_pass]):
@@ -105,14 +129,14 @@ def _users(sb, lang, uid):
                     st.error("أدخل جميع البيانات")
 
     try:
-        users = sb.table("profiles").select("id, full_name, language, created_at").execute().data or []
+        users     = sb.table("profiles").select("id, full_name, language, account_status, created_at").execute().data or []
         roles_res = sb.table("user_roles").select("user_id, roles(name)").execute().data or []
-        role_map = {r["user_id"]: r["roles"]["name"] for r in roles_res}
+        role_map  = {r["user_id"]: r["roles"]["name"] for r in roles_res}
         import pandas as pd
         df = pd.DataFrame([{
-            "الاسم":  u["full_name"],
-            "الدور":  role_map.get(u["id"],"—"),
-            "اللغة":  u.get("language","ar"),
+            "الاسم":   u["full_name"],
+            "الدور":   role_map.get(u["id"],"—"),
+            "الحالة":  u.get("account_status","active"),
             "تاريخ الانضمام": str(u["created_at"])[:10],
         } for u in users])
         st.dataframe(df, use_container_width=True, hide_index=True)
@@ -120,10 +144,8 @@ def _users(sb, lang, uid):
         st.error(f"خطأ: {e}")
 
 
-# ── SUBJECTS ──────────────────────────────────────────────────
 def _subjects(sb, lang, uid):
-    st.title("📚 " + ("المواد الدراسية" if lang=="ar" else "Subjects"))
-
+    st.title("📚 المواد الدراسية")
     with st.expander("➕ إضافة مادة"):
         with st.form("add_subject"):
             c1, c2 = st.columns(2)
@@ -158,16 +180,15 @@ def _subjects(sb, lang, uid):
         st.error(f"خطأ: {e}")
 
 
-# ── ACCESS CODES ──────────────────────────────────────────────
 def _access_codes(sb, lang, uid):
-    st.title("🔑 " + ("أكواد الوصول" if lang=="ar" else "Access Codes"))
+    st.title("🔑 أكواد الوصول")
     from app.services.access_code_service import AccessCodeService
     from app.reports.excel_exporter import export_codes_excel
     svc = AccessCodeService()
 
     subs = sb.table("subjects").select("id, name_ar").eq("is_active",True).execute().data or []
     if not subs:
-        st.info("لا توجد مواد. أضف مادة أولاً.")
+        st.info("لا توجد مواد.")
         return
     sub_opts = {s["name_ar"]: s["id"] for s in subs}
     chosen   = st.selectbox("اختر المادة", list(sub_opts.keys()))
@@ -181,15 +202,14 @@ def _access_codes(sb, lang, uid):
                 b_desc  = st.text_input("الوصف (اختياري)")
             with c2:
                 qty      = st.number_input("عدد الأكواد", 1, 500, 10)
-                max_uses = st.number_input("الحد الأقصى للاستخدام", 0, 100, 1, help="0=غير محدود")
+                max_uses = st.number_input("الحد الأقصى للاستخدام", 0, 100, 1)
             with c3:
                 use_exp  = st.checkbox("تحديد تاريخ انتهاء")
                 exp_date = st.date_input("تاريخ الانتهاء") if use_exp else None
             if st.form_submit_button("🚀 توليد", use_container_width=True):
                 with st.spinner("جاري التوليد..."):
                     try:
-                        svc.create_batch(sid, b_name, b_desc, int(qty),
-                                         int(max_uses), exp_date, uid)
+                        svc.create_batch(sid, b_name, b_desc, int(qty), int(max_uses), exp_date, uid)
                         st.success(f"✅ تم توليد {qty} كود")
                         st.rerun()
                     except Exception as e:
@@ -199,24 +219,18 @@ def _access_codes(sb, lang, uid):
     for batch in batches:
         stats = svc.get_batch_analytics(batch["id"])
         with st.expander(
-            f"📦 {batch['batch_name']}  |  "
-            f"✅ {stats.get('used',0)} مستخدم  |  "
-            f"🔵 {stats.get('unused',0)} متاح  |  "
-            f"📊 {stats.get('redemption_rate',0)}%"
+            f"📦 {batch['batch_name']} | ✅ {stats.get('used',0)} مستخدم | 🔵 {stats.get('unused',0)} متاح"
         ):
             c1,c2,c3,c4 = st.columns(4)
             c1.metric("إجمالي", stats.get("total",0))
             c2.metric("مستخدم", stats.get("used",0))
             c3.metric("متاح",   stats.get("unused",0))
-            c4.metric("منتهي",  stats.get("expired",0))
-
+            c4.metric("معدل",   f"{stats.get('redemption_rate',0)}%")
             codes = svc.get_batch_codes(batch["id"])
             buf, fname = export_codes_excel(codes, batch["batch_name"], chosen)
-            st.download_button(
-                "📥 تحميل Excel", buf, file_name=fname,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"xl_{batch['id']}"
-            )
+            st.download_button("📥 Excel", buf, file_name=fname,
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               key=f"xl_{batch['id']}")
             import pandas as pd
             df = pd.DataFrame([{
                 "الكود": c["code"],
@@ -227,15 +241,12 @@ def _access_codes(sb, lang, uid):
             st.dataframe(df, use_container_width=True, hide_index=True)
 
 
-# ── RESULTS ───────────────────────────────────────────────────
 def _results(sb, lang):
-    st.title("📈 " + ("النتائج" if lang=="ar" else "Results"))
+    st.title("📈 النتائج")
     try:
-        res = sb.table("results")\
-                .select("*, profiles(full_name), exams(title)")\
+        res = sb.table("results").select("*, profiles(full_name), exams(title)")\
                 .order("submitted_at", desc=True).limit(200).execute()
-        rows = res.data or []
-        if rows:
+        if res.data:
             import pandas as pd
             df = pd.DataFrame([{
                 "الطالب":  (r.get("profiles") or {}).get("full_name","—"),
@@ -243,7 +254,7 @@ def _results(sb, lang):
                 "الدرجة":  f"{r['score']}/{r['total']}",
                 "%":       f"{round(r['score']/r['total']*100) if r['total'] else 0}%",
                 "التاريخ": str(r["submitted_at"])[:10],
-            } for r in rows])
+            } for r in res.data])
             st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             st.info("لا توجد نتائج")
@@ -251,15 +262,12 @@ def _results(sb, lang):
         st.error(f"خطأ: {e}")
 
 
-# ── AUDIT LOG ─────────────────────────────────────────────────
 def _audit(sb, lang):
-    st.title("📋 " + ("سجل الأحداث" if lang=="ar" else "Audit Log"))
+    st.title("📋 سجل الأحداث")
     try:
-        res = sb.table("audit_logs")\
-                .select("*, profiles(full_name)")\
+        res = sb.table("audit_logs").select("*, profiles(full_name)")\
                 .order("created_at", desc=True).limit(300).execute()
-        rows = res.data or []
-        if rows:
+        if res.data:
             import pandas as pd
             df = pd.DataFrame([{
                 "المستخدم": (r.get("profiles") or {}).get("full_name","—"),
@@ -267,9 +275,9 @@ def _audit(sb, lang):
                 "النوع":    r.get("entity","—"),
                 "التفاصيل": str(r.get("metadata",{}))[:80],
                 "الوقت":    str(r["created_at"])[:19],
-            } for r in rows])
+            } for r in res.data])
             st.dataframe(df, use_container_width=True, hide_index=True)
         else:
-            st.info("لا توجد أحداث مسجلة")
+            st.info("لا توجد أحداث")
     except Exception as e:
         st.error(f"خطأ: {e}")
