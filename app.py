@@ -61,7 +61,11 @@ if page == "profile":
     from app.pages.auth.profile import show_profile
     show_profile()
 
-elif role == "admin" or role == "co_admin":
+elif page == "invoice":
+    from app.pages.cashier.invoice import show_invoice
+    show_invoice()
+
+elif role in ("admin", "co_admin"):
     from app.pages.admin import show_admin
     show_admin()
 
@@ -72,6 +76,10 @@ elif role == "teacher":
 elif role == "student":
     from app.pages.student import show_student
     show_student()
+
+elif role == "cashier":
+    from app.pages.cashier import show_cashier
+    show_cashier()
 
 else:
     st.warning("⚠️ دور المستخدم غير معروف. تواصل مع المشرف.")

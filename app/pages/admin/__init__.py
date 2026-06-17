@@ -146,6 +146,7 @@ def _users(sb, lang, uid):
 
 def _subjects(sb, lang, uid):
     st.title("📚 المواد الدراسية")
+
     with st.expander("➕ إضافة مادة"):
         with st.form("add_subject"):
             c1, c2 = st.columns(2)
@@ -166,16 +167,68 @@ def _subjects(sb, lang, uid):
                     }).execute()
                     st.success("✅ تمت الإضافة")
                     st.rerun()
+                else:
+                    st.error("أدخل اسم المادة")
 
     try:
-        subs = sb.table("subjects").select("*, grades(name_ar)").eq("is_active",True).execute().data or []
+        # Fetch all teachers
+        teacher_role_id = sb.table("roles").select("id").eq("name","teacher").single().execute().data["id"]
+        teacher_user_ids = [r["user_id"] for r in (sb.table("user_roles").select("user_id").eq("role_id", teacher_role_id).execute().data or [])]
+
+        all_teachers = []
+        if teacher_user_ids:
+            all_teachers = sb.table("profiles").select("id, full_name").in_("id", teacher_user_ids).execute().data or []
+        teacher_map = {t["id"]: t["full_name"] for t in all_teachers}
+
+        subs = sb.table("subjects").select("*, grades(name_ar)").eq("is_active", True).execute().data or []
+
         for sub in subs:
-            c1, c2, c3 = st.columns([4,2,1])
-            c1.markdown(f"**{sub['name_ar']}** · {(sub.get('grades') or {}).get('name_ar','—')}")
-            c2.markdown(f"🎨 `#{sub['color_hex']}`")
-            if c3.button("🗑️", key=f"ds_{sub['id']}"):
-                sb.table("subjects").update({"is_active":False}).eq("id",sub["id"]).execute()
-                st.rerun()
+            sub_id = sub["id"]
+
+            # Get current assigned teachers for this subject
+            assigned = sb.table("subject_teachers").select("teacher_id").eq("subject_id", sub_id).execute().data or []
+            assigned_ids = [a["teacher_id"] for a in assigned]
+            assigned_names = [teacher_map.get(tid, "—") for tid in assigned_ids if tid in teacher_map]
+
+            with st.expander(f"**{sub['name_ar']}** · {(sub.get('grades') or {}).get('name_ar','—')} · 🎨 #{sub.get('color_hex','')}", expanded=False):
+                col1, col2 = st.columns([3, 1])
+
+                with col1:
+                    st.markdown(f"**المعلمون الحاليون:** {', '.join(assigned_names) if assigned_names else '—'}")
+
+                    # Teacher assignment form
+                    if all_teachers:
+                        available_teachers = {t["full_name"]: t["id"] for t in all_teachers}
+                        selected_names = st.multiselect(
+                            "تعيين المعلمين",
+                            options=list(available_teachers.keys()),
+                            default=[teacher_map[tid] for tid in assigned_ids if tid in teacher_map],
+                            key=f"teachers_{sub_id}"
+                        )
+                        if st.button("💾 حفظ المعلمين", key=f"save_teachers_{sub_id}"):
+                            try:
+                                selected_ids = [available_teachers[n] for n in selected_names]
+                                # Remove all existing assignments
+                                sb.table("subject_teachers").delete().eq("subject_id", sub_id).execute()
+                                # Insert new assignments
+                                if selected_ids:
+                                    sb.table("subject_teachers").insert([
+                                        {"subject_id": sub_id, "teacher_id": tid}
+                                        for tid in selected_ids
+                                    ]).execute()
+                                st.success("✅ تم حفظ المعلمين")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"خطأ: {e}")
+                    else:
+                        st.info("لا يوجد معلمون مسجلون بعد.")
+
+                with col2:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("🗑️ حذف المادة", key=f"ds_{sub_id}", type="secondary"):
+                        sb.table("subjects").update({"is_active": False}).eq("id", sub_id).execute()
+                        st.rerun()
+
     except Exception as e:
         st.error(f"خطأ: {e}")
 
