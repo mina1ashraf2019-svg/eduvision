@@ -13,13 +13,29 @@ def _get_client(use_service_role: bool = False):
 
 
 @st.cache_resource
-def get_supabase():
+def _get_anon_client():
     return _get_client(use_service_role=False)
 
 
 @st.cache_resource
 def get_supabase_admin():
     return _get_client(use_service_role=True)
+
+
+def get_supabase():
+    """
+    Returns a Supabase client with the current user's session injected.
+    This ensures auth.uid() works correctly in RLS policies.
+    """
+    client = _get_anon_client()
+    access_token  = st.session_state.get("access_token")
+    refresh_token = st.session_state.get("refresh_token")
+    if access_token and refresh_token:
+        try:
+            client.auth.set_session(access_token, refresh_token)
+        except Exception:
+            pass
+    return client
 
 
 def get_current_user() -> Optional[dict]:
