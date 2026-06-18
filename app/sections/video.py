@@ -2,7 +2,6 @@ import re
 import streamlit as st
 from app.services.progress_service import ProgressService
 
-# Comprehensive YouTube URL patterns
 _YT_PATTERNS = [
     r"(?:youtube\.com/watch\?.*v=)([a-zA-Z0-9_-]{11})",
     r"(?:youtu\.be/)([a-zA-Z0-9_-]{11})",
@@ -14,38 +13,21 @@ _YT_PATTERNS = [
 
 
 def validate_youtube_url(url: str) -> tuple[bool, str]:
-    """
-    Validates a YouTube URL.
-    Returns (is_valid, error_message).
-    """
     if not url or not url.strip():
         return False, "الرجاء إدخال رابط الفيديو"
-
     url = url.strip()
-
-    # Must start with http/https
     if not url.startswith(("http://", "https://")):
         return False, "الرابط يجب أن يبدأ بـ https://"
-
-    # Must be a YouTube domain
     yt_domains = ("youtube.com", "youtu.be", "www.youtube.com", "m.youtube.com")
     if not any(d in url for d in yt_domains):
         return False, "الرابط يجب أن يكون من YouTube (youtube.com أو youtu.be)"
-
-    # Must extract a valid video ID
     video_id = _extract_youtube_id(url)
     if not video_id:
         return False, "تعذّر استخراج معرّف الفيديو — تأكد من صحة الرابط"
-
     return True, ""
 
 
 def render_video(config: dict, student_id: str, lang: str, section_id: str) -> None:
-    """
-    Renders a video section.
-    Supports: YouTube embed or Supabase Storage video.
-    Marks section complete on open (PDF-style) since we can't track JS events easily.
-    """
     youtube_url = config.get("youtube_url")
     video_path  = config.get("video_path")
     autoplay    = config.get("autoplay", False)
@@ -55,7 +37,6 @@ def render_video(config: dict, student_id: str, lang: str, section_id: str) -> N
         if not is_valid:
             st.error(f"❌ رابط YouTube غير صحيح: {err_msg}")
             return
-
         video_id = _extract_youtube_id(str(youtube_url))
         autoplay_param = "?autoplay=1" if autoplay else ""
         embed_url = f"https://www.youtube.com/embed/{video_id}{autoplay_param}"
@@ -83,22 +64,20 @@ def render_video(config: dict, student_id: str, lang: str, section_id: str) -> N
         st.info("لم يتم إضافة فيديو بعد")
         return
 
-    # Mark section complete on view
     ProgressService().mark_section_complete(student_id, section_id)
 
 
-def render_youtube_url_input(current_url: str = "") -> str:
+def render_youtube_url_input(current_url: str = "", key: str = "yt_url") -> str:
     """
     Reusable validated YouTube URL input widget.
-    Returns the entered URL (valid or not — caller decides when to save).
-    Shows inline validation feedback.
-    Usage: in teacher section builder forms.
+    key param ensures unique element ID when used multiple times on same page.
     """
     url = st.text_input(
         "رابط YouTube",
         value=current_url,
         placeholder="https://www.youtube.com/watch?v=... أو https://youtu.be/...",
         help="يدعم: روابط youtube.com/watch و youtu.be و youtube.com/shorts",
+        key=key,
     )
 
     if url and url.strip():
@@ -113,7 +92,6 @@ def render_youtube_url_input(current_url: str = "") -> str:
 
 
 def _extract_youtube_id(url: str) -> str | None:
-    """Extract video ID from various YouTube URL formats."""
     for pattern in _YT_PATTERNS:
         match = re.search(pattern, url)
         if match:
