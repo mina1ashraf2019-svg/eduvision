@@ -11,10 +11,6 @@ class AuthService:
     # LOGIN
     # ─────────────────────────────────────────────────────────
     def login(self, email: str, password: str) -> dict:
-        """
-        Sign in with email/password.
-        Returns user dict and stores in session.
-        """
         try:
             sb = get_supabase()
             res = sb.auth.sign_in_with_password({
@@ -24,7 +20,6 @@ class AuthService:
             user = res.user
             session = res.session
 
-            # Load profile
             profile = sb.table("profiles").select("*").eq("id", user.id).single().execute()
 
             user_data = {
@@ -36,12 +31,10 @@ class AuthService:
                 "language":   profile.data.get("language", "ar"),
             }
 
-            # Store in session
             st.session_state.user          = user_data
             st.session_state.access_token  = session.access_token
             st.session_state.refresh_token = session.refresh_token
 
-            # Load role & permissions (warm cache)
             self._load_role_permissions(sb)
 
             return user_data
@@ -61,10 +54,6 @@ class AuthService:
     # ─────────────────────────────────────────────────────────
     def register(self, email: str, password: str, full_name: str,
                  language: str = "ar") -> dict:
-        """
-        Register new student account.
-        Admin/teacher accounts are created by admin only.
-        """
         try:
             sb = get_supabase()
             res = sb.auth.sign_up({
@@ -79,13 +68,11 @@ class AuthService:
 
             user_id = res.user.id
 
-            # Update profile with full_name & language
             sb.table("profiles").update({
                 "full_name": full_name,
                 "language":  language
             }).eq("id", user_id).execute()
 
-            # Assign student role
             admin_sb = get_supabase_admin()
             student_role = admin_sb.table("roles").select("id").eq("name", "student").single().execute()
             if student_role.data:
@@ -131,8 +118,12 @@ class AuthService:
     # ─────────────────────────────────────────────────────────
     def admin_create_user(self, email: str, password: str,
                           full_name: str, role_name: str,
-                          created_by: str) -> dict:
-        """Create teacher/admin accounts — requires service role."""
+                          created_by: str,
+                          extra: Optional[dict] = None) -> dict:
+        """
+        Create any user account — requires service role.
+        extra: optional dict with phone, grade_id, language, etc.
+        """
         try:
             admin_sb = get_supabase_admin()
 
@@ -145,10 +136,17 @@ class AuthService:
             })
             user_id = res.user.id
 
-            # Update profile
-            admin_sb.table("profiles").update({
-                "full_name": full_name
-            }).eq("id", user_id).execute()
+            # Build profile update payload
+            profile_update = {"full_name": full_name}
+            if extra:
+                if extra.get("phone"):
+                    profile_update["phone"] = extra["phone"]
+                if extra.get("grade_id"):
+                    profile_update["grade_id"] = extra["grade_id"]
+                if extra.get("language"):
+                    profile_update["language"] = extra["language"]
+
+            admin_sb.table("profiles").update(profile_update).eq("id", user_id).execute()
 
             # Assign role
             role = admin_sb.table("roles").select("id").eq("name", role_name).single().execute()

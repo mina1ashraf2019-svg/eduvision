@@ -74,7 +74,6 @@ def _dashboard(sb, lang):
     c3.metric("📖 المواد",      subjects)
     c4.metric("📝 الامتحانات", exams)
 
-    # Security alerts summary
     try:
         alerts = sb.table("security_alerts").select("id", count="exact").eq("resolved", False).execute().count or 0
         if alerts > 0:
@@ -88,7 +87,6 @@ def _dashboard(sb, lang):
         res = sb.table("results").select("submitted_at, score, total, profiles(full_name), exams(title)")\
                 .order("submitted_at", desc=True).limit(10).execute()
         if res.data:
-            import pandas as pd
             rows = []
             for r in res.data:
                 pct = round(r["score"]/r["total"]*100) if r["total"] else 0
@@ -107,41 +105,171 @@ def _dashboard(sb, lang):
 
 def _users(sb, lang, uid):
     st.title("👥 المستخدمين")
-    with st.expander("➕ إضافة مستخدم"):
-        with st.form("add_user"):
-            c1, c2 = st.columns(2)
-            with c1:
-                u_name  = st.text_input("الاسم الكامل")
-                u_email = st.text_input("البريد الإلكتروني")
-            with c2:
-                u_role  = st.selectbox("الدور", ["teacher","co_admin","admin","cashier"])
-                u_pass  = st.text_input("كلمة المرور", type="password")
-            if st.form_submit_button("➕ إضافة", use_container_width=True):
-                if all([u_name, u_email, u_pass]):
-                    try:
-                        from app.services.auth_service import AuthService
-                        AuthService().admin_create_user(u_email, u_pass, u_name, u_role, uid)
-                        st.success("✅ تم إضافة المستخدم")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(str(e))
-                else:
-                    st.error("أدخل جميع البيانات")
 
-    try:
-        users     = sb.table("profiles").select("id, full_name, language, account_status, created_at").execute().data or []
-        roles_res = sb.table("user_roles").select("user_id, roles(name)").execute().data or []
-        role_map  = {r["user_id"]: r["roles"]["name"] for r in roles_res}
-        import pandas as pd
-        df = pd.DataFrame([{
-            "الاسم":   u["full_name"],
-            "الدور":   role_map.get(u["id"],"—"),
-            "الحالة":  u.get("account_status","active"),
-            "تاريخ الانضمام": str(u["created_at"])[:10],
-        } for u in users])
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    except Exception as e:
-        st.error(f"خطأ: {e}")
+    tab_staff, tab_students = st.tabs([
+        "👨‍💼 الموظفون (معلمين / أدمن / كاشير)",
+        "🎓 الطلاب"
+    ])
+
+    # ── Tab 1: Staff ─────────────────────────────────────────
+    with tab_staff:
+        with st.expander("➕ إضافة موظف جديد"):
+            with st.form("add_user"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    u_name  = st.text_input("الاسم الكامل")
+                    u_email = st.text_input("البريد الإلكتروني")
+                with c2:
+                    u_role  = st.selectbox("الدور", ["teacher","co_admin","admin","cashier"])
+                    u_pass  = st.text_input("كلمة المرور", type="password")
+                if st.form_submit_button("➕ إضافة", use_container_width=True):
+                    if all([u_name, u_email, u_pass]):
+                        try:
+                            from app.services.auth_service import AuthService
+                            AuthService().admin_create_user(u_email, u_pass, u_name, u_role, uid)
+                            st.success("✅ تم إضافة المستخدم")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+                    else:
+                        st.error("أدخل جميع البيانات")
+
+        try:
+            users     = sb.table("profiles").select("id, full_name, language, account_status, created_at").execute().data or []
+            roles_res = sb.table("user_roles").select("user_id, roles(name)").execute().data or []
+            role_map  = {r["user_id"]: r["roles"]["name"] for r in roles_res if r.get("roles")}
+            # Show only non-students
+            staff = [u for u in users if role_map.get(u["id"], "student") != "student"]
+            import pandas as pd
+            if staff:
+                df = pd.DataFrame([{
+                    "الاسم":   u["full_name"],
+                    "الدور":   role_map.get(u["id"],"—"),
+                    "الحالة":  u.get("account_status","active"),
+                    "تاريخ الانضمام": str(u["created_at"])[:10],
+                } for u in staff])
+                st.dataframe(df, use_container_width=True, hide_index=True)
+            else:
+                st.info("لا يوجد موظفون مسجلون.")
+        except Exception as e:
+            st.error(f"خطأ: {e}")
+
+    # ── Tab 2: Students ───────────────────────────────────────
+    with tab_students:
+        st.subheader("🎓 تسجيل طالب جديد")
+
+        with st.expander("➕ إضافة طالب بالـ Email"):
+            with st.form("enroll_student"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    s_name  = st.text_input("الاسم الكامل")
+                    s_email = st.text_input("البريد الإلكتروني (Gmail أو أي email)")
+                with c2:
+                    s_phone = st.text_input("رقم الهاتف (اختياري)")
+                    s_pass  = st.text_input("كلمة المرور", type="password")
+
+                # Grade selection
+                try:
+                    grades = sb.table("grades").select("*").order("order_num").execute().data or []
+                    g_opts = {g["name_ar"]: g["id"] for g in grades}
+                    s_grade = st.selectbox("الصف الدراسي", list(g_opts.keys()) if g_opts else ["—"])
+                except Exception:
+                    g_opts = {}
+                    s_grade = st.text_input("الصف الدراسي")
+
+                submitted = st.form_submit_button("✅ تسجيل الطالب", use_container_width=True, type="primary")
+                if submitted:
+                    if all([s_name, s_email, s_pass]):
+                        try:
+                            from app.services.auth_service import AuthService
+                            AuthService().admin_create_user(
+                                s_email, s_pass, s_name, "student", uid,
+                                extra={"phone": s_phone, "grade_id": g_opts.get(s_grade)}
+                            )
+                            st.success(f"✅ تم تسجيل الطالب: {s_name}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"خطأ: {e}")
+                    else:
+                        st.error("أدخل الاسم والإيميل وكلمة المرور على الأقل.")
+
+        # ── Bulk enroll via Excel ─────────────────────────────
+        with st.expander("📥 رفع ملف Excel لتسجيل طلاب متعددين"):
+            st.info("الملف لازم يحتوي على أعمدة: **full_name, email, password, phone (اختياري)**")
+            uploaded = st.file_uploader("اختر ملف Excel", type=["xlsx"])
+            if uploaded:
+                try:
+                    import openpyxl, io
+                    wb = openpyxl.load_workbook(io.BytesIO(uploaded.read()))
+                    ws = wb.active
+                    headers = [str(c.value).strip().lower() for c in next(ws.iter_rows(min_row=1, max_row=1))]
+                    rows = list(ws.iter_rows(min_row=2, values_only=True))
+                    st.write(f"📊 {len(rows)} طالب في الملف")
+                    if st.button("🚀 بدء التسجيل الجماعي", type="primary"):
+                        from app.services.auth_service import AuthService
+                        auth = AuthService()
+                        success, failed = 0, 0
+                        prog = st.progress(0)
+                        for i, row in enumerate(rows):
+                            data = dict(zip(headers, row))
+                            try:
+                                auth.admin_create_user(
+                                    str(data.get("email","")).strip(),
+                                    str(data.get("password","")).strip(),
+                                    str(data.get("full_name","")).strip(),
+                                    "student", uid,
+                                    extra={"phone": str(data.get("phone",""))}
+                                )
+                                success += 1
+                            except Exception:
+                                failed += 1
+                            prog.progress((i+1)/len(rows))
+                        st.success(f"✅ تم تسجيل {success} طالب")
+                        if failed:
+                            st.warning(f"⚠️ فشل {failed} طالب (إيميل مكرر أو بيانات ناقصة)")
+                except Exception as e:
+                    st.error(f"خطأ في قراءة الملف: {e}")
+
+        # ── Students table ────────────────────────────────────
+        st.divider()
+        st.subheader("📋 قائمة الطلاب")
+        try:
+            roles_res = sb.table("user_roles").select("user_id, roles(name)").execute().data or []
+            student_ids = [r["user_id"] for r in roles_res if (r.get("roles") or {}).get("name") == "student"]
+
+            if student_ids:
+                students = sb.table("profiles").select("id, full_name, account_status, created_at").in_("id", student_ids).order("full_name").execute().data or []
+                import pandas as pd
+
+                # Search
+                search = st.text_input("🔍 بحث باسم الطالب")
+                if search:
+                    students = [s for s in students if search.lower() in s["full_name"].lower()]
+
+                st.caption(f"إجمالي: {len(students)} طالب")
+
+                for s in students:
+                    with st.container(border=True):
+                        c1, c2, c3 = st.columns([4, 2, 2])
+                        with c1:
+                            st.markdown(f"**👤 {s['full_name']}**")
+                            st.caption(f"انضم: {str(s['created_at'])[:10]}")
+                        with c2:
+                            status = s.get("account_status", "active")
+                            st.markdown(f"{'🟢 نشط' if status == 'active' else '🔴 محظور'}")
+                        with c3:
+                            if status == "active":
+                                if st.button("🚫 حظر", key=f"ban_{s['id']}"):
+                                    sb.table("profiles").update({"account_status": "banned"}).eq("id", s["id"]).execute()
+                                    st.rerun()
+                            else:
+                                if st.button("✅ تفعيل", key=f"unban_{s['id']}"):
+                                    sb.table("profiles").update({"account_status": "active"}).eq("id", s["id"]).execute()
+                                    st.rerun()
+            else:
+                st.info("لا يوجد طلاب مسجلون بعد.")
+        except Exception as e:
+            st.error(f"خطأ: {e}")
 
 
 def _subjects(sb, lang, uid):
@@ -171,7 +299,6 @@ def _subjects(sb, lang, uid):
                     st.error("أدخل اسم المادة")
 
     try:
-        # Fetch all teachers
         teacher_role_id = sb.table("roles").select("id").eq("name","teacher").single().execute().data["id"]
         teacher_user_ids = [r["user_id"] for r in (sb.table("user_roles").select("user_id").eq("role_id", teacher_role_id).execute().data or [])]
 
@@ -184,8 +311,6 @@ def _subjects(sb, lang, uid):
 
         for sub in subs:
             sub_id = sub["id"]
-
-            # Get current assigned teachers for this subject
             assigned = sb.table("subject_teachers").select("teacher_id").eq("subject_id", sub_id).execute().data or []
             assigned_ids = [a["teacher_id"] for a in assigned]
             assigned_names = [teacher_map.get(tid, "—") for tid in assigned_ids if tid in teacher_map]
@@ -196,7 +321,6 @@ def _subjects(sb, lang, uid):
                 with col1:
                     st.markdown(f"**المعلمون الحاليون:** {', '.join(assigned_names) if assigned_names else '—'}")
 
-                    # Teacher assignment form
                     if all_teachers:
                         available_teachers = {t["full_name"]: t["id"] for t in all_teachers}
                         selected_names = st.multiselect(
@@ -208,9 +332,7 @@ def _subjects(sb, lang, uid):
                         if st.button("💾 حفظ المعلمين", key=f"save_teachers_{sub_id}"):
                             try:
                                 selected_ids = [available_teachers[n] for n in selected_names]
-                                # Remove all existing assignments
                                 sb.table("subject_teachers").delete().eq("subject_id", sub_id).execute()
-                                # Insert new assignments
                                 if selected_ids:
                                     sb.table("subject_teachers").insert([
                                         {"subject_id": sub_id, "teacher_id": tid}
