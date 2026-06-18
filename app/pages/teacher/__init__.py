@@ -673,7 +673,7 @@ def _section_config_form(sb, sec, lang, uid=None, subject_id=None):
 
     if section_type in ("video", "hw_review_video"):
         from app.sections.video import render_youtube_url_input
-        yt = render_youtube_url_input(current_url=config.get("youtube_url",""))
+        yt = render_youtube_url_input(current_url=config.get("youtube_url",""), key=f"yt_url_{sec['id']}_{section_type}")
         new_config = {"youtube_url": yt or None}
 
     elif section_type == "quiz":
