@@ -1,4 +1,4 @@
-from app.core.supabase_client import get_supabase
+from app.core.security import get_supabase, get_supabase_admin
 import streamlit as st
 from datetime import datetime
 import uuid
