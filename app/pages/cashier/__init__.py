@@ -1,194 +1,210 @@
 import streamlit as st
+from app.core.security import get_supabase, get_current_user_id
 from app.services.sales_service import SalesService
+from translations import get_lang
 
 
 def show_cashier():
-    sales = SalesService()
-    user = st.session_state.user
-    lang = user.get("language", "ar")
+    lang = get_lang()
+    uid  = get_current_user_id()
+    sb   = get_supabase()
+    svc  = SalesService()
 
-    st.title("🏦 " + ("بوابة الكاشير" if lang == "ar" else "Cashier Portal"))
-    st.divider()
+    with st.sidebar:
+        st.markdown(f"### 💰 {'الكاشير' if lang=='ar' else 'Cashier'}")
+        pages = {
+            "new_invoice": ("🧾", "فاتورة جديدة"),
+            "invoices":    ("📋", "الفواتير"),
+        }
+        if "cashier_page" not in st.session_state:
+            st.session_state.cashier_page = "new_invoice"
+        for key, (icon, label) in pages.items():
+            active = st.session_state.cashier_page == key
+            if st.button(f"{icon} {label}", use_container_width=True,
+                         type="primary" if active else "secondary",
+                         key=f"cash_nav_{key}"):
+                st.session_state.cashier_page = key
+                st.rerun()
 
-    tab1, tab2, tab3 = st.tabs([
-        "📋 " + ("الفواتير" if lang == "ar" else "Invoices"),
-        "➕ " + ("فاتورة جديدة" if lang == "ar" else "New Invoice"),
-        "📊 " + ("التقارير" if lang == "ar" else "Reports"),
-    ])
-
-    with tab1:
-        _show_invoices(sales, lang, user)
-
-    with tab2:
-        _show_new_invoice(sales, lang, user)
-
-    with tab3:
-        _show_reports(sales, lang)
+    page = st.session_state.cashier_page
+    if   page == "new_invoice": _new_invoice(sb, svc, uid, lang)
+    elif page == "invoices":    _invoices(sb, svc, uid, lang)
 
 
-def _show_invoices(sales, lang, user):
-    st.subheader("📋 " + ("جدول الفواتير" if lang == "ar" else "Invoices"))
+def _new_invoice(sb, svc, uid, lang):
+    st.title("🧾 فاتورة جديدة")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        search = st.text_input("🔍 " + ("بحث باسم الطالب" if lang == "ar" else "Search student"))
-    with col2:
-        status_filter = st.selectbox(
-            "الحالة" if lang == "ar" else "Status",
-            ["الكل", "paid", "pending", "refunded"]
-        )
+    # Revenue stats
+    try:
+        today_rev = svc.get_today_revenue()
+        c1, c2 = st.columns(2)
+        c1.metric("💰 إيرادات اليوم", f"{today_rev['revenue']} ج.م")
+        c2.metric("🧾 فواتير اليوم",  today_rev["invoices"])
+        st.divider()
+    except Exception:
+        pass
 
-    records = sales.get_all_sales(
-        search=search or None,
-        status=None if status_filter == "الكل" else status_filter,
-    )
+    c1, c2 = st.columns(2)
+    with c1:
+        stu_name  = st.text_input("اسم الطالب *")
+        stu_phone = st.text_input("رقم الهاتف")
+    with c2:
+        pay_method = st.selectbox("طريقة الدفع", ["cash", "card", "transfer"])
+        discount   = st.number_input("خصم %", 0.0, 100.0, 0.0)
 
-    if not records:
-        st.info("لا توجد فواتير." if lang == "ar" else "No invoices found.")
-        return
+    st.markdown("---")
+    st.markdown("**➕ إضافة مادة للفاتورة**")
 
-    for rec in records:
-        with st.container(border=True):
-            c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 2])
+    try:
+        subs = sb.table("subjects").select("id, name_ar").eq("is_active", True).execute().data or []
+    except Exception:
+        subs = []
 
-            with c1:
-                st.markdown(f"**👤 {rec.get('student_name', '—')}**")
-                st.caption(f"📄 {rec.get('invoice_number', '—')}")
+    sub_opts = {s["name_ar"]: s["id"] for s in subs}
 
-            with c2:
-                st.markdown(f"💰 **{rec.get('total_amount', 0):,.0f} ج.م**")
-                if rec.get("discount_pct", 0) > 0:
-                    st.caption(f"خصم {rec['discount_pct']}%")
+    if "cashier_items" not in st.session_state:
+        st.session_state.cashier_items = []
 
-            with c3:
-                status = rec.get("status", "pending")
-                color = {"paid": "🟢", "pending": "🟡", "refunded": "🔴"}.get(status, "⚪")
-                st.markdown(f"{color} {status}")
-                st.caption(rec.get("payment_method", "—"))
+    if sub_opts:
+        chosen_sub = st.selectbox("اختر المادة", list(sub_opts.keys()), key="cash_sub")
+        sub_id = sub_opts[chosen_sub]
 
-            with c4:
-                st.caption(str(rec.get("created_at", ""))[:10])
+        try:
+            batches    = sb.table("code_batches").select("id, batch_name")\
+                           .eq("subject_id", sub_id).execute().data or []
+            batch_opts = {b["batch_name"]: b["id"] for b in batches}
+        except Exception:
+            batch_opts = {}
 
-            with c5:
-                # زرار فاتورة PDF
-                if st.button("🧾 فاتورة", key=f"inv_{rec['id']}"):
-                    st.session_state["invoice_data"] = rec
-                    st.session_state["page"] = "invoice"
-                    st.rerun()
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            chosen_batch = st.selectbox("الباتش", list(batch_opts.keys()), key="cash_batch") \
+                           if batch_opts else None
+        with c2:
+            qty = st.number_input("الكمية", 1, 100, 1, key="cash_qty")
+        with c3:
+            price = st.number_input("السعر/الوحدة (ج.م)", 0.0, 9999.0, 0.0, key="cash_price")
 
-                # زرار رد
-                if status == "paid":
-                    if st.button("🔁 رد", key=f"refund_{rec['id']}"):
-                        st.session_state[f"confirm_refund_{rec['id']}"] = True
+        if st.button("➕ إضافة للفاتورة", use_container_width=True):
+            st.session_state.cashier_items.append({
+                "subject_id":   sub_id,
+                "subject_name": chosen_sub,
+                "batch_id":     batch_opts.get(chosen_batch) if chosen_batch else None,
+                "batch_name":   chosen_batch or "—",
+                "quantity":     int(qty),
+                "unit_price":   float(price),
+            })
+            st.rerun()
 
-                    if st.session_state.get(f"confirm_refund_{rec['id']}"):
-                        reason = st.text_input(
-                            "سبب الرد" if lang == "ar" else "Refund reason",
-                            key=f"reason_{rec['id']}"
+    st.markdown("---")
+
+    if st.session_state.cashier_items:
+        st.markdown("**📋 عناصر الفاتورة:**")
+        total = 0
+        for i, item in enumerate(st.session_state.cashier_items):
+            line   = item["quantity"] * item["unit_price"]
+            total += line
+            c1, c2 = st.columns([6, 1])
+            c1.markdown(f"• **{item['subject_name']}** × {item['quantity']} × {item['unit_price']} ج.م = **{line:.2f} ج.م**")
+            if c2.button("🗑️", key=f"cash_rm_{i}"):
+                st.session_state.cashier_items.pop(i)
+                st.rerun()
+
+        disc_amount = round(total * discount / 100, 2)
+        final       = round(total - disc_amount, 2)
+
+        st.markdown("---")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**الإجمالي قبل الخصم:** {total:.2f} ج.م")
+            if discount > 0:
+                st.markdown(f"**الخصم ({discount}%):** -{disc_amount:.2f} ج.م")
+            st.markdown(f"## 💰 المجموع: {final:.2f} ج.م")
+        with col2:
+            st.markdown("<br><br>", unsafe_allow_html=True)
+            if st.button("✅ إصدار الفاتورة", type="primary", use_container_width=True):
+                if not stu_name:
+                    st.error("أدخل اسم الطالب")
+                else:
+                    try:
+                        invoice = svc.create_invoice(
+                            cashier_id=uid,
+                            items=st.session_state.cashier_items,
+                            student_name=stu_name,
+                            student_phone=stu_phone,
+                            discount_pct=float(discount),
+                            payment_method=pay_method,
                         )
-                        col_yes, col_no = st.columns(2)
-                        with col_yes:
-                            if st.button("✅ تأكيد", key=f"yes_{rec['id']}"):
-                                ok = sales.refund_sale(
-                                    sale_id=rec["id"],
-                                    reason=reason,
-                                    refunded_by=st.session_state.user["id"]
-                                )
-                                if ok:
-                                    st.success("تم الرد ✅")
-                                    st.session_state.pop(f"confirm_refund_{rec['id']}", None)
-                                    st.rerun()
-                        with col_no:
-                            if st.button("❌ إلغاء", key=f"no_{rec['id']}"):
-                                st.session_state.pop(f"confirm_refund_{rec['id']}", None)
-                                st.rerun()
+                        inv_num = invoice["invoice_number"]
+                        st.success(f"✅ تم إصدار الفاتورة: **{inv_num}**")
+                        st.session_state.cashier_items = []
 
+                        # PDF download button
+                        try:
+                            from app.reports.pdf_exporter import generate_invoice_pdf
+                            pdf_buf = generate_invoice_pdf(invoice)
+                            st.download_button(
+                                "🖨️ طباعة / تحميل PDF",
+                                data=pdf_buf,
+                                file_name=f"invoice_{inv_num}.pdf",
+                                mime="application/pdf",
+                            )
+                        except Exception as e:
+                            st.warning(f"PDF غير متاح: {e}")
 
-def _show_new_invoice(sales, lang, user):
-    st.subheader("➕ " + ("فاتورة جديدة" if lang == "ar" else "New Invoice"))
-
-    students = sales.get_all_students()
-    if not students:
-        st.warning("لا يوجد طلاب مسجلين." if lang == "ar" else "No students registered.")
-        return
-
-    student_map = {f"{s['full_name']} — {s.get('phone', '')}": s for s in students}
-
-    selected_label = st.selectbox(
-        "👤 " + ("الطالب" if lang == "ar" else "Student"),
-        list(student_map.keys())
-    )
-    selected_student = student_map[selected_label]
-
-    col1, col2 = st.columns(2)
-    with col1:
-        subtotal = st.number_input(
-            "💰 " + ("المبلغ الأساسي (ج.م)" if lang == "ar" else "Subtotal (EGP)"),
-            min_value=0.0, step=50.0, format="%.2f"
-        )
-    with col2:
-        discount_pct = st.number_input(
-            "🏷️ " + ("نسبة الخصم %" if lang == "ar" else "Discount %"),
-            min_value=0.0, max_value=100.0, step=5.0, format="%.1f"
-        )
-
-    discount_amount = round(subtotal * discount_pct / 100, 2)
-    total = round(subtotal - discount_amount, 2)
-
-    if discount_pct > 0:
-        st.info(f"💡 خصم: {discount_amount:,.2f} ج.م | **الإجمالي: {total:,.2f} ج.م**")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"خطأ: {e}")
     else:
-        st.info(f"💡 **الإجمالي: {total:,.2f} ج.م**")
-
-    payment_method = st.selectbox(
-        "💳 " + ("طريقة الدفع" if lang == "ar" else "Payment Method"),
-        ["cash", "vodafone_cash", "instapay", "bank_transfer"]
-    )
-    notes = st.text_area("📝 " + ("ملاحظات" if lang == "ar" else "Notes"), height=80)
-
-    if st.button(
-        "✅ " + ("تسجيل الفاتورة" if lang == "ar" else "Register Invoice"),
-        use_container_width=True, type="primary"
-    ):
-        if subtotal <= 0:
-            st.error("المبلغ يجب أن يكون أكبر من صفر." if lang == "ar" else "Amount must be > 0.")
-        else:
-            ok, inv_num = sales.create_sale(
-                student_id=selected_student["id"],
-                student_name=selected_student["full_name"],
-                student_phone=selected_student.get("phone", ""),
-                subtotal=subtotal,
-                discount_pct=discount_pct,
-                payment_method=payment_method,
-                notes=notes,
-                cashier_id=user["id"]
-            )
-            if ok:
-                st.success(f"✅ تم تسجيل الفاتورة: **{inv_num}**")
-                st.balloons()
-            else:
-                st.error("فشل تسجيل الفاتورة." if lang == "ar" else "Failed to register invoice.")
+        st.info("أضف مادة واحدة على الأقل للفاتورة.")
 
 
-def _show_reports(sales, lang):
-    st.subheader("📊 " + ("تقرير المبيعات" if lang == "ar" else "Sales Report"))
+def _invoices(sb, svc, uid, lang):
+    st.title("📋 الفواتير")
 
-    summary = sales.get_summary()
-    if not summary:
-        st.info("لا توجد بيانات." if lang == "ar" else "No data.")
+    try:
+        invoices = svc.get_invoices(cashier_id=uid)
+    except Exception:
+        try:
+            invoices = svc.get_invoices()
+        except Exception as e:
+            st.error(f"خطأ: {e}")
+            return
+
+    if not invoices:
+        st.info("لا توجد فواتير بعد.")
         return
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("💰 الإجمالي", f"{summary.get('total', 0):,.0f} ج.م")
-    c2.metric("🟢 مدفوع", f"{summary.get('paid', 0):,.0f} ج.م")
-    c3.metric("🟡 معلق", f"{summary.get('pending', 0):,.0f} ج.م")
-    c4.metric("🔴 مردود", f"{summary.get('refunded', 0):,.0f} ج.م")
+    for inv in invoices:
+        inv_num    = inv.get("invoice_number", "—")
+        stu        = inv.get("student_name") or (inv.get("profiles") or {}).get("full_name","—")
+        total      = inv.get("total_amount", 0)
+        status     = inv.get("status","paid")
+        created_at = str(inv.get("created_at",""))[:10]
+        status_map = {"paid":"✅ مدفوع","refunded":"↩️ مسترجع","cancelled":"❌ ملغي","pending":"⏳ معلق"}
+        status_lbl = status_map.get(status, status)
 
-    st.divider()
-
-    by_month = sales.get_sales_by_month()
-    if by_month:
-        st.subheader("📅 " + ("الإيراد الشهري" if lang == "ar" else "Monthly Revenue"))
-        import pandas as pd
-        df = pd.DataFrame(by_month)
-        st.bar_chart(df.set_index("الشهر"))
+        with st.expander(f"{status_lbl} | {inv_num} | {stu} | {total} ج.م | {created_at}"):
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                st.markdown(f"**الطالب:** {stu}")
+                st.markdown(f"**طريقة الدفع:** {inv.get('payment_method','—')}")
+                st.markdown(f"**الإجمالي:** {total} ج.م")
+                if inv.get("discount_pct",0) > 0:
+                    st.markdown(f"**الخصم:** {inv['discount_pct']}% (-{inv.get('discount_amount',0)} ج.م)")
+                if inv.get("notes"):
+                    st.caption(inv["notes"])
+            with c2:
+                # PDF export
+                try:
+                    from app.reports.pdf_exporter import generate_invoice_pdf
+                    pdf_buf = generate_invoice_pdf(inv)
+                    st.download_button(
+                        "🖨️ PDF",
+                        data=pdf_buf,
+                        file_name=f"invoice_{inv_num}.pdf",
+                        mime="application/pdf",
+                        key=f"pdf_{inv['id']}",
+                    )
+                except Exception:
+                    pass
