@@ -70,7 +70,7 @@ def show_auth():
                     except AuthError as e:
                         st.error(str(e))
 
-        st.info("🔐 Demo: admin@eduvision.app / admin123456")
+
 
     # ══════════════════════════════════════════════════════════
     # REGISTER TAB
