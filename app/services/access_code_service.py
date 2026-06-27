@@ -1,26 +1,15 @@
 from __future__ import annotations
-import secrets, string
-from datetime import datetime
-from app.core.security import get_supabase, get_supabase_admin
-from app.core.exceptions import AccessCodeError, EnrollmentError
+import secrets
+import string
+from datetime import datetime, timezone
+from app.core.security import get_supabase_admin
+from app.core.exceptions import AccessCodeError
 
 
 class AccessCodeService:
 
-    def _generate_code(self, length: int = 8) -> str:
-        chars = string.ascii_uppercase + string.digits
-        return "".join(secrets.choice(chars) for _ in range(length))
-
-    def _code_exists(self, code: str) -> bool:
-        try:
-            sb = get_supabase_admin()
-            res = sb.table("access_codes").select("id").eq("code", code).execute()
-            return bool(res.data)
-        except Exception:
-            return False
-
     # ─────────────────────────────────────────────────────────
-    # CREATE BATCH
+    # CREATE BATCH  (PERF-01: bulk INSERT, no N+1)
     # ─────────────────────────────────────────────────────────
     def create_batch(self, subject_id: str, batch_name: str, description: str,
                      quantity: int, max_uses: int, expires_at,
@@ -40,29 +29,37 @@ class AccessCodeService:
             }).execute()
             batch = batch_res.data[0]
 
-            # Generate codes
-            codes_to_insert = []
-            for _ in range(quantity):
-                code = self._generate_code()
-                while self._code_exists(code):
-                    code = self._generate_code()
-                codes_to_insert.append({
+            # Generate all codes in Python first (no DB round-trips)
+            # UNIQUE constraint in DB is the final safety net
+            chars    = string.ascii_uppercase + string.digits
+            code_set = set()
+            while len(code_set) < quantity:
+                code_set.add("".join(secrets.choice(chars) for _ in range(8)))
+
+            codes_to_insert = [
+                {
                     "batch_id":   batch["id"],
                     "subject_id": subject_id,
                     "code":       code,
                     "max_uses":   max_uses,
                     "expires_at": str(expires_at) if expires_at else None,
-                })
+                }
+                for code in code_set
+            ]
 
+            # Single bulk INSERT (was 500+ sequential calls before)
             codes_res = sb.table("access_codes").insert(codes_to_insert).execute()
 
-            # Audit log
             sb.table("audit_logs").insert({
                 "user_id":   created_by,
                 "action":    "create_batch",
                 "entity":    "code_batch",
                 "entity_id": batch["id"],
-                "metadata":  {"quantity": quantity, "subject_id": subject_id, "batch_name": batch_name}
+                "metadata":  {
+                    "quantity":    quantity,
+                    "subject_id":  subject_id,
+                    "batch_name":  batch_name,
+                },
             }).execute()
 
             return {"batch": batch, "codes": codes_res.data}
@@ -71,93 +68,49 @@ class AccessCodeService:
             raise AccessCodeError(f"خطأ في إنشاء الباتش: {e}")
 
     # ─────────────────────────────────────────────────────────
-    # ACTIVATE CODE
+    # ACTIVATE CODE  (FIX-04: atomic via Postgres RPC)
     # ─────────────────────────────────────────────────────────
     def activate_code(self, student_id: str, code: str) -> tuple[bool, str]:
+        """
+        Calls the redeem_access_code() Postgres function which runs the
+        full check → enroll → increment atomically under FOR UPDATE SKIP LOCKED.
+        Eliminates the TOCTOU race condition that existed before.
+        """
         try:
             sb = get_supabase_admin()
-
-            # Fetch code
-            res = sb.table("access_codes")\
-                    .select("*")\
-                    .eq("code", code.strip().upper())\
-                    .single().execute()
-
-            if not res.data:
-                return False, "الكود غير موجود"
-
-            record = res.data
-
-            if not record["is_active"]:
-                return False, "الكود غير نشط"
-
-            if record["max_uses"] > 0 and record["uses_count"] >= record["max_uses"]:
-                return False, "الكود استُخدم بالفعل"
-
-            if record["expires_at"]:
-                expires = datetime.fromisoformat(record["expires_at"].replace("Z", "+00:00"))
-                if expires < datetime.utcnow().replace(tzinfo=expires.tzinfo):
-                    return False, "الكود منتهي الصلاحية"
-
-            # Check not already enrolled
-            enrolled = sb.table("enrollments")\
-                         .select("id")\
-                         .eq("student_id", student_id)\
-                         .eq("subject_id", record["subject_id"])\
-                         .execute()
-            if enrolled.data:
-                return False, "أنت مسجل في هذه المادة مسبقاً"
-
-            # Enroll student
-            sb.table("enrollments").insert({
-                "student_id":     student_id,
-                "subject_id":     record["subject_id"],
-                "access_code_id": record["id"],
+            result = sb.rpc("redeem_access_code", {
+                "p_student_id": student_id,
+                "p_code":       code.strip().upper(),
             }).execute()
 
-            # Increment use count
-            sb.table("access_codes").update({
-                "uses_count": record["uses_count"] + 1
-            }).eq("id", record["id"]).execute()
+            data = result.data or {}
+            return data.get("ok", False), data.get("msg", "خطأ غير معروف")
 
-            # Audit log
-            sb.table("audit_logs").insert({
-                "user_id":   student_id,
-                "action":    "activate_code",
-                "entity":    "access_code",
-                "entity_id": record["id"],
-                "metadata":  {"subject_id": record["subject_id"], "code": code}
-            }).execute()
-
-            return True, "✅ تم تفعيل الكود! يمكنك الوصول للمادة الآن"
-
-        except AccessCodeError:
-            raise
         except Exception as e:
             return False, f"خطأ في تفعيل الكود: {e}"
 
     # ─────────────────────────────────────────────────────────
-    # GET BATCH CODES
+    # READ HELPERS
     # ─────────────────────────────────────────────────────────
     def get_batch_codes(self, batch_id: str) -> list[dict]:
         try:
-            sb = get_supabase_admin()
-            res = sb.table("access_codes")\
-                    .select("*")\
-                    .eq("batch_id", batch_id)\
-                    .order("created_at").execute()
-            return res.data or []
+            return get_supabase_admin() \
+                .table("access_codes") \
+                .select("*") \
+                .eq("batch_id", batch_id) \
+                .order("created_at") \
+                .execute().data or []
         except Exception:
             return []
 
     def get_subject_batches(self, subject_id: str) -> list[dict]:
         try:
-            sb = get_supabase_admin()
-            res = sb.table("code_batches")\
-                    .select("*")\
-                    .eq("subject_id", subject_id)\
-                    .order("created_at", desc=True).execute()
-            return res.data or []
+            return get_supabase_admin() \
+                .table("code_batches") \
+                .select("*") \
+                .eq("subject_id", subject_id) \
+                .order("created_at", desc=True) \
+                .execute().data or []
         except Exception:
             return []
 
@@ -166,15 +119,18 @@ class AccessCodeService:
         if not codes:
             return {}
         total    = len(codes)
+        now      = datetime.now(timezone.utc)
         used     = sum(1 for c in codes if c["uses_count"] >= c["max_uses"])
         inactive = sum(1 for c in codes if not c["is_active"])
-        now      = datetime.utcnow()
-        expired  = sum(1 for c in codes if c["expires_at"] and
-                       datetime.fromisoformat(c["expires_at"].replace("Z","")) < now)
+        expired  = sum(
+            1 for c in codes
+            if c["expires_at"] and
+               datetime.fromisoformat(c["expires_at"].replace("Z", "+00:00")) < now
+        )
         return {
             "total":           total,
             "used":            used,
-            "unused":          total - used - expired - inactive,
+            "unused":          max(0, total - used - expired - inactive),
             "expired":         expired,
             "inactive":        inactive,
             "redemption_rate": round(used / total * 100, 1) if total else 0,
