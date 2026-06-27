@@ -120,15 +120,69 @@ def show_sales():
     with tab2:
         invoices = svc.get_invoices()
         if invoices:
-            import pandas as pd
-            df = pd.DataFrame([{
-                "رقم الفاتورة": i["invoice_number"],
-                "الطالب":       i.get("student_name") or (i.get("profiles") or {}).get("full_name","—"),
-                "الإجمالي":     f"{i['total_amount']} ج.م",
-                "الدفع":        i["payment_method"],
-                "الحالة":       {"paid":"✅ مدفوع","refunded":"↩️ مسترجع","cancelled":"❌ ملغي"}.get(i["status"],i["status"]),
-                "التاريخ":      str(i["created_at"])[:10],
-            } for i in invoices])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            for inv in invoices:
+                inv_num    = inv.get("invoice_number","—")
+                stu        = inv.get("student_name") or (inv.get("profiles") or {}).get("full_name","—")
+                total      = inv.get("total_amount", 0)
+                status     = inv.get("status","paid")
+                created_at = str(inv.get("created_at",""))[:10]
+                status_map = {"paid":"✅ مدفوع","refunded":"↩️ مسترجع","cancelled":"❌ ملغي"}
+                status_lbl = status_map.get(status, status)
+
+                with st.expander(f"{status_lbl} | {inv_num} | {stu} | {total} ج.م | {created_at}"):
+                    c1, c2 = st.columns([4, 1])
+                    with c1:
+                        st.markdown(f"**الطالب:** {stu}")
+                        st.markdown(f"**الإجمالي:** {total} ج.م | **الدفع:** {inv.get('payment_method','—')}")
+                        st.caption(f"التاريخ: {created_at}")
+                        # PDF
+                        try:
+                            from app.reports.pdf_exporter import generate_invoice_pdf
+                            pdf_buf = generate_invoice_pdf(inv)
+                            st.download_button("🖨️ PDF", data=pdf_buf,
+                                file_name=f"invoice_{inv_num}.pdf",
+                                mime="application/pdf",
+                                key=f"salespdf_{inv['id']}")
+                        except Exception:
+                            pass
+                    with c2:
+                        _render_refund_button(svc, inv, sb)
         else:
             st.info("لا توجد فواتير بعد.")
+
+
+def _render_refund_button(svc, inv, sb):
+    """Refund button with confirmation dialog."""
+    inv_id  = inv["id"]
+    inv_num = inv.get("invoice_number","—")
+    status  = inv.get("status","paid")
+
+    if status != "paid":
+        return
+
+    confirm_key = f"confirm_refund_{inv_id}"
+
+    if not st.session_state.get(confirm_key):
+        if st.button(f"↩️ استرجاع", key=f"refund_btn_{inv_id}",
+                     type="secondary", use_container_width=True):
+            st.session_state[confirm_key] = True
+            st.rerun()
+    else:
+        st.warning(f"⚠️ تأكيد استرجاع الفاتورة **{inv_num}**؟")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("✅ نعم، استرجع", key=f"refund_yes_{inv_id}",
+                         type="primary", use_container_width=True):
+                try:
+                    sb.table("sales_invoices").update({"status": "refunded"})\
+                      .eq("id", inv_id).execute()
+                    st.session_state.pop(confirm_key, None)
+                    st.success(f"✅ تم استرجاع الفاتورة {inv_num}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"خطأ: {e}")
+        with c2:
+            if st.button("❌ إلغاء", key=f"refund_no_{inv_id}",
+                         use_container_width=True):
+                st.session_state.pop(confirm_key, None)
+                st.rerun()
