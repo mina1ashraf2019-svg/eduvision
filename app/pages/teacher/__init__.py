@@ -11,12 +11,13 @@ def show_teacher():
     with st.sidebar:
         st.markdown(f"### 📚 {'لوحة المعلم' if lang=='ar' else 'Teacher Panel'}")
         pages = {
-            "subjects":  ("📚", "موادي",         "My Subjects"),
-            "lectures":  ("🎬", "المحاضرات",     "Lectures"),
-            "exams":     ("📝", "الامتحانات",    "Exams"),
-            "homework":  ("📋", "الواجبات",      "Homework"),
-            "grading":   ("✏️", "تصحيح الواجبات","Grading"),
-            "results":   ("📈", "النتائج",        "Results"),
+            "subjects":       ("📚", "موادي",           "My Subjects"),
+            "lectures":       ("🎬", "المحاضرات",       "Lectures"),
+            "qr_attendance":  ("📱", "حضور QR",         "QR Attendance"),
+            "exams":          ("📝", "الامتحانات",      "Exams"),
+            "homework":       ("📋", "الواجبات",        "Homework"),
+            "grading":        ("✏️", "تصحيح الواجبات", "Grading"),
+            "results":        ("📈", "النتائج",          "Results"),
         }
         if "teacher_page" not in st.session_state:
             st.session_state.teacher_page = "subjects"
@@ -32,12 +33,15 @@ def show_teacher():
                 st.rerun()
 
     page = st.session_state.teacher_page
-    if   page == "subjects":  _subjects(sb, lang, uid)
-    elif page == "lectures":  _lectures(sb, lang, uid)
-    elif page == "exams":     _exams(sb, lang, uid)
-    elif page == "homework":  _homework(sb, lang, uid)
-    elif page == "grading":   _hw_grading(sb, lang, uid)
-    elif page == "results":   _results(sb, lang, uid)
+    if   page == "subjects":      _subjects(sb, lang, uid)
+    elif page == "lectures":      _lectures(sb, lang, uid)
+    elif page == "qr_attendance":
+        from app.pages.teacher.qr_attendance import show_qr_attendance
+        show_qr_attendance()
+    elif page == "exams":         _exams(sb, lang, uid)
+    elif page == "homework":      _homework(sb, lang, uid)
+    elif page == "grading":       _hw_grading(sb, lang, uid)
+    elif page == "results":       _results(sb, lang, uid)
 
 
 # ── MY SUBJECTS ───────────────────────────────────────────────
