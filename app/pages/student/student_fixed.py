@@ -25,6 +25,12 @@ def show_student():
             st.session_state.pop("active_subject", None)
             st.session_state.pop("active_lecture", None)
             st.rerun()
+        if st.button("📱 " + ("حضور QR" if lang=="ar" else "QR Check-in"),
+                     key="stu_qr", use_container_width=True):
+            st.session_state.student_page = "qr_scan"
+            st.session_state.pop("active_subject", None)
+            st.session_state.pop("active_lecture", None)
+            st.rerun()
         if st.button("🔑 " + ("تفعيل كود" if lang=="ar" else "Activate Code"),
                      key="stu_activate", use_container_width=True):
             st.session_state.student_page = "activate"
@@ -40,6 +46,9 @@ def show_student():
         _my_results(sb, lang, uid)
     elif student_page == "activate":
         _activate_code(sb, lang, uid)
+    elif student_page == "qr_scan":
+        from app.pages.student.qr_scan import show_qr_scan
+        show_qr_scan()
     elif active_lecture:
         _lecture_view(sb, lang, uid, active_lecture, prog)
     elif active_subject:
