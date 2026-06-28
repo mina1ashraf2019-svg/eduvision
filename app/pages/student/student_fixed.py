@@ -1,8 +1,15 @@
+import re
 import streamlit as st
 from app.core.security import get_supabase, get_current_user_id
 from app.services.progress_service import ProgressService
 from app.sections import render_section
 from translations import get_lang
+
+
+def _safe_color(hex_str: str) -> str:
+    """Sanitize color_hex — prevents XSS via unsafe HTML injection."""
+    clean = re.sub(r'[^0-9A-Fa-f]', '', str(hex_str or ""))
+    return clean[:6] if len(clean) >= 6 else "3B82F6"
 
 
 def show_student():
@@ -80,7 +87,7 @@ def _dashboard(sb, lang, uid, prog):
     cols = st.columns(3)
     for i, sub in enumerate(enrolled):
         subject_prog = prog.get_subject_progress(uid, sub["id"])
-        color = sub.get("color_hex", "3B82F6")
+        color = _safe_color(sub.get("color_hex", "3B82F6"))
         grade = (sub.get("grades") or {}).get("name_ar", "")
         with cols[i % 3]:
             st.markdown(f"""
@@ -230,6 +237,32 @@ def _lecture_view(sb, lang, uid, lecture_id, prog):
         st.error(f"خطأ: {e}")
         return
 
+    subject_id = lecture.get("subject_id")
+
+    # ── CREDIT GATE ──────────────────────────────────────────────────
+    # Check and consume 1 credit before showing any content.
+    # Re-access is free (handled atomically in RPC via lecture_access_log).
+    from app.services.credit_service import CreditService
+    credit_svc = CreditService()
+
+    gate_key = f"credit_granted_{lecture_id}"
+    if not st.session_state.get(gate_key):
+        ok, msg, data = credit_svc.consume_lecture_credit(uid, lecture_id, subject_id)
+        if not ok:
+            st.warning(f"🔒 {msg}")
+            wallet = credit_svc.get_wallet(uid, subject_id)
+            st.info(f"رصيدك الحالي: **{wallet.get('credits_available', 0)} credits**")
+            if st.button("🔑 تفعيل كود جديد"):
+                st.session_state.pop("active_lecture", None)
+                st.session_state.student_page = "activate"
+                st.rerun()
+            return
+        # Access granted — cache in session so next rerun doesn't re-charge
+        st.session_state[gate_key] = True
+        if data.get("charged"):
+            wallet = credit_svc.get_wallet(uid, subject_id)
+            st.success(f"✅ تم فتح المحاضرة · رصيدك: {wallet.get('credits_available', 0)} credits")
+    # ── END CREDIT GATE ──────────────────────────────────────────────
     st.title(lecture["title_ar"])
     if lecture.get("description"):
         st.caption(lecture["description"])
@@ -320,9 +353,12 @@ def _activate_code(sb, lang, uid):
             st.error("يرجى إدخال الكود")
         else:
             with st.spinner("جاري التحقق..."):
-                ok, msg = svc.activate_code(uid, code_input.strip().upper())
+                ok, msg, data = svc.activate_code(uid, code_input.strip().upper())
                 if ok:
-                    st.success(msg)
+                    credits_added = data.get("credits_added", 1)
+                    new_balance   = data.get("new_balance", "—")
+                    st.success(f"🎉 {msg}")
+                    st.info(f"تم إضافة **{credits_added} credits** · رصيدك الآن: **{new_balance}**")
                     st.session_state.student_page = "home"
                     st.balloons()
                     st.rerun()
