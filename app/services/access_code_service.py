@@ -70,24 +70,24 @@ class AccessCodeService:
     # ─────────────────────────────────────────────────────────
     # ACTIVATE CODE  (FIX-04: atomic via Postgres RPC)
     # ─────────────────────────────────────────────────────────
-    def activate_code(self, student_id: str, code: str) -> tuple[bool, str]:
+    def activate_code(self, student_id: str, code: str) -> tuple[bool, str, dict]:
         """
-        Calls the redeem_access_code() Postgres function which runs the
-        full check → enroll → increment atomically under FOR UPDATE SKIP LOCKED.
-        Eliminates the TOCTOU race condition that existed before.
+        Calls redeem_code_for_credits() — atomic RPC that:
+        1. Validates the code (FOR UPDATE SKIP LOCKED)
+        2. Enrolls student if first time
+        3. Adds credits to subject wallet
+        4. Logs audit trail
+        Returns (ok, message, data_dict).
         """
         try:
-            sb = get_supabase_admin()
-            result = sb.rpc("redeem_access_code", {
+            result = get_supabase_admin().rpc("redeem_code_for_credits", {
                 "p_student_id": student_id,
                 "p_code":       code.strip().upper(),
             }).execute()
-
             data = result.data or {}
-            return data.get("ok", False), data.get("msg", "خطأ غير معروف")
-
+            return data.get("ok", False), data.get("msg", "خطأ غير معروف"), data
         except Exception as e:
-            return False, f"خطأ في تفعيل الكود: {e}"
+            return False, f"خطأ في تفعيل الكود: {e}", {}
 
     # ─────────────────────────────────────────────────────────
     # READ HELPERS
